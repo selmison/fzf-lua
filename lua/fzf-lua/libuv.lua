@@ -1,7 +1,8 @@
 ---@diagnostic disable-next-line: deprecated
 local uv = vim.uv or vim.loop
 
-local _is_win = vim.fn.has("win32") == 1 or vim.fn.has("win64") == 1
+local sysname = uv.os_uname().sysname
+local _is_win = sysname:match("Windows") and true or false
 
 local M = {}
 
@@ -23,6 +24,8 @@ end
 local function coroutine_callback(fn)
   local co = coroutine.running()
   local callback = function(...)
+    -- not sure what happened here...
+    -- if not M or not co then return end
     if coroutine.status(co) == "suspended" then
       coroutine.resume(co, ...)
     else
@@ -76,7 +79,6 @@ end
 ---@field env? table
 ---@field cb_finish fun(code: integer, sig: integer, from: string, pid: integer)
 ---@field cb_write fun(data: string, cb: fun(err: any): nil): nil
----@field cb_write_lines? fun(lines: string[])
 ---@field cb_err fun(data: string)
 ---@field cb_pid? fun(pid: integer)
 ---@field fn_transform? fun()
@@ -84,14 +86,17 @@ end
 ---@field EOL_data? string
 ---@field process1? boolean
 ---@field profiler? boolean
----@field use_queue? boolean
+
+-- or table address
+local gen_uuid = function()
+  -- return uv.random(10)
+  return uv.hrtime()
+end
 
 ---@param opts fzf-lua.SpawnOpts
----@param fn_transform function?
----@param fn_done function?
 ---@return uv.uv_process_t proc
 ---@return integer         pid
-M.spawn = function(opts, fn_transform, fn_done)
+M.spawn = function(opts)
   local EOL = opts.EOL or "\n"
   local EOL_data = type(opts.cmd) == "string"
       -- fd -0|--print0
@@ -103,30 +108,20 @@ M.spawn = function(opts, fn_transform, fn_done)
         or opts.cmd:match("%s%-%-null")
         or opts.cmd:match("%s%-Z"))
       and "\0" or "\n"
+  local EOL_byte = EOL_data:byte()
   local output_pipe = assert(uv.new_pipe(false))
   local error_pipe = assert(uv.new_pipe(false))
-  local write_cb_count, read_cb_count = 0, 0
-  local prev_line_content ---@type string?
+  local write_cb_count = 0
   local handle, pid ---@type uv.uv_process_t, integer
-  local co = coroutine.running()
-  local queue = require("fzf-lua.lib.queue").new()
+  -- TODO: puc lua won't work here
+  local strbuf = (vim.F.nil_wrap(require)("vim._core.stringbuffer") or
+    require("fzf-lua.lib.stringbuffer")).new()
   local work_ctx
 
-  -- Disable queue if running headless due to
-  -- "Attempt to yield across a C-call boundary"
-  opts.use_queue = not _G._fzf_lua_is_headless and opts.use_queue
-
-  -- cb_write_lines trumps cb_write
-  ---@diagnostic disable-next-line: assign-type-mismatch
-  if opts.cb_write_lines then opts.cb_write = opts.cb_write_lines end
-
   local can_finish = function()
-    if not output_pipe:is_active() -- EOF signalled or process is aborting
-        and read_cb_count == 0     -- no outstanding read_cb data processing
-        and write_cb_count == 0    -- no outstanding write callbacks
-    then
-      return true
-    end
+    return not output_pipe:is_active() -- EOF signalled or process is aborting
+        and write_cb_count == 0        -- no outstanding write callbacks
+        and #strbuf == 0
   end
 
   ---@diagnostic disable-next-line: redefined-local
@@ -139,7 +134,7 @@ M.spawn = function(opts, fn_transform, fn_done)
     if opts.cb_finish then
       opts.cb_finish(code, sig, from, pid)
     end
-    queue:clear()
+    strbuf:reset()
     if not handle:is_closing() then
       handle:kill("sigterm")
       vim.defer_fn(function()
@@ -148,8 +143,6 @@ M.spawn = function(opts, fn_transform, fn_done)
         end
       end, 200)
     end
-    -- NO LONGER USED, was coroutinify callback
-    if fn_done then fn_done(pid) end
   end
 
   -- https://github.com/luvit/luv/blob/master/docs.md
@@ -187,7 +180,7 @@ M.spawn = function(opts, fn_transform, fn_done)
   if opts.cb_pid then opts.cb_pid(pid) end
 
   local function write_cb(data)
-    write_cb_count = write_cb_count + 1
+    -- write_cb_count = write_cb_count + 1
     opts.cb_write(data, function(err)
       write_cb_count = write_cb_count - 1
       if err then
@@ -203,127 +196,114 @@ M.spawn = function(opts, fn_transform, fn_done)
     end)
   end
 
+  local uuid = gen_uuid() -- distinguish two call when use worker pool
+  local optstr = require("fzf-lua.libuv").serialize(opts.opts, false)
+  -- TODO: not correct for live_grep multiprocess=false? uuid?
   ---@param data string data stream
-  ---@param prev string? rest of line from previous call
-  ---@param trans function? line transformation function
-  ---@return table, string? line array, partial last line (no EOL)
-  local function split_lines(data, prev, trans)
+  ---@return string, string? line array, partial last line (no EOL)
+  local function split_lines(data, o, id)
+    -- io.stderr:write("[DEBUG] worker init")
+    if not _G.uuid then
+      -- TODO: we can pass serialize opts to first queue...
+      local __FILE__ = assert(debug.getinfo(1, "S")).source:gsub("^@", "")
+      local lua = vim.fs.dirname(vim.fs.dirname(__FILE__))
+      package.path = ("%s/?.lua;"):format(lua) .. package.path
+      package.path = ("%s/?/init.lua;"):format(lua) .. package.path
+      vim.fn = {}
+      -- TODO: serialize a necessary helper module to access vim state
+      vim.fn.has = function(feature)
+        if feature:match("nvim%-0.12") then return 1 end
+        if feature:match("nvim%-0.11") then return 1 end
+        if feature:match("nvim%-0.10") then return 1 end
+        if feature:match("nvim%-0.9") then return 1 end
+        return 0
+      end
+      require("fzf-lua.make_entry")
+      local devicons = vim.fs.normalize("~/lazy/nvim-web-devicons/lua")
+      package.path = ("%s/?.lua;"):format(devicons) .. package.path
+      package.path = ("%s/?/init.lua;"):format(devicons) .. package.path
+      vim.F = require("vim.F")
+      vim.o = {}
+      setmetatable(vim.api, { __index = function() return function() end end })
+    end
+    -- TODO: deserialize to string then eval here, otherwise we cannot use upvalue
+    -- TODO: on buf? swtich gitsigns/diff_int.lua:32: bad argument #1 to 'decode' (string expected, got nil)
+    if id ~= _G.uuid then -- refresh opts
+      _G.opts = FzfLua.libuv.deserialize(o, false)
+      local opts = _G.opts
+      local load_fn = FzfLua.libuv.load_fn
+      if not _G.uuid then
+        local fn_preprocess = load_fn(opts.fn_preprocess) or opts.fn_preprocess
+        if fn_preprocess then fn_preprocess(opts) end
+      end
+      if opts.fn_transform then _G.trans = load_fn(opts.fn_transform) end
+      _G.uuid = id
+    end
+
+    -- local trans = require("fzf-lua.make_entry").file
+    -- local worker_opts = assert(_G.fzf_lua_worker_opts, "no opts")
+    local trans = _G.trans
+    local opts = _G.opts
     local ret = {}
     local start_idx = 1
     repeat
-      local nl_idx = data:find(EOL_data, start_idx, true)
+      local nl_idx = data:find(EOL_data or "\n", start_idx, true)
       if nl_idx then
         local cr = data:byte(nl_idx - 1, nl_idx - 1) == 13 -- \r
         local line = data:sub(start_idx, nl_idx - (cr and 2 or 1))
-        if prev then
-          line = prev .. line
-          prev = nil
-        end
-        if trans then line = trans(line) end
-        if line then table.insert(ret, line) end
+        -- line = trans(line, worker_opts)
+        if trans then line = trans(line, opts) end
+        if line then ret[#ret + 1] = line end
         start_idx = nl_idx + 1
-      else
-        -- assert(start_idx <= #data)
-        if prev and #prev > 4096 then
-          -- chunk size is 64K, limit previous line length to 4K
-          -- max line length is therefor 4K + 64K (leftover + full chunk)
-          -- without this we can memory fault on extremely long lines (#185)
-          -- or have UI freezes (#211)
-          prev = prev:sub(1, 4096)
-        end
-        prev = (prev or "") .. data:sub(start_idx)
       end
     until not nl_idx or start_idx > #data
-    return ret, prev
+    ret[#ret + 1] = ""
+    return table.concat(ret, "\n")
   end
 
-  --- Called with nil to process the leftover data
-  ---@param data string?
-  local process_data = function(data)
-    if not data and prev_line_content then
-      data = prev_line_content .. EOL
-      prev_line_content = nil
-    end
-    if not data then
-      -- NOTE: this isn't called when prev_line_content is not nil but that's
-      -- not a problem as the write_cb will call finish once the callback is done
-      -- since the output_pipe is already in "closing" state
-      if can_finish() then
-        finish(0, 0, "[EOF]", pid)
+  work_ctx = uv.new_work(split_lines, write_cb)
+
+  local co = coroutine.create(function()
+    local stop = 0
+    while true do
+      local len = #strbuf
+      local ref = strbuf:ref()
+      if output_pipe:is_closing() then
+        if len == 0 then return end
+        if ref[len - 1] ~= EOL_byte then strbuf:put(EOL_byte) end -- make split_lines happy
+        write_cb_count = write_cb_count + 1
+        return work_ctx:queue(strbuf:get(), optstr, uuid)
       end
-      return
-    end
-    if not fn_transform then
-      write_cb(data)
-    else
-      -- NOTE: cannot use due to "yield across a C-call boundary"
-      -- if co and not work_ctx then
-      --   work_ctx = uv.new_work(split_lines, function(lines, prev)
-      --     coroutine.resume(co, lines, prev)
-      --   end)
-      -- end
-      local nlines, lines = 0, nil
-      local t_st = opts.profiler and uv.hrtime()
-      if t_st then write_cb(string.format("[DEBUG] start: %.0f (ns)" .. EOL, t_st)) end
-      if work_ctx then
-        -- should never get here, work_ctx is never initialized
-        -- code remains as a solemn reminder to my efforts of making
-        -- multiprocess=false a lag free experience
-        if prev_line_content then uv.queue_work(work_ctx, data, prev_line_content) end
-        lines, prev_line_content = coroutine.yield()
-      else
-        lines, prev_line_content = split_lines(data, prev_line_content,
-          -- NOTE `fn_transform=true` is used to force line split without transformation
-          type(fn_transform) == "function" and fn_transform or nil)
-      end
-      nlines = nlines + #lines
-      if #lines > 0 then
-        if opts.cb_write_lines then
-          write_cb(lines)
-        else
-          -- Testing shows better performance writing the entire table at once as opposed to
-          -- calling 'write_cb' for every line after 'fn_transform', we therefore only use
-          -- `process1` when using "mini.icons" as `vim.filetype.match` causes a signigicant
-          -- delay and having to wait for all lines to be processed has an apparent lag
-          if opts.process1 then
-            vim.tbl_map(function(l) write_cb(l .. EOL) end, lines)
-          else
-            write_cb(table.concat(lines, EOL) .. EOL)
-          end
+      local eol = len
+      for i = len - 1, stop, -1 do
+        if ref[i] == EOL_byte then
+          eol = i
+          break
         end
       end
-      if t_st then
-        local t_e = vim.uv.hrtime()
-        write_cb(string.format("[DEBUG] finish:%.0f (ns) %d lines took %.0f (ms)" .. EOL,
-          t_e, nlines, (t_e - t_st) / 1e6))
+      if eol == len then
+        stop = len -- no EOL found, wait for more data
+        coroutine.yield()
+      else
+        local data = strbuf:get(eol + 1)
+        stop = #strbuf
+        write_cb_count = write_cb_count + 1
+        work_ctx:queue(data, optstr, uuid)
       end
     end
-  end
+    if can_finish() then finish(0, 0, "[EOF]", pid) end
+  end)
 
   local read_cb = function(err, data)
     if err then
-      finish(130, 0, "[read_cb: err]", pid)
-      return
-    end
-    if not data then
-      -- EOF signalled, we can close the pipe
+      return finish(130, 0, "[read_cb: err]", pid)
+    elseif data then
+      strbuf:put(data)
+    else -- EOF signalled, we can close the pipe
       output_pipe:close()
     end
-    if opts.use_queue then
-      if data then queue:push(data) end
-      -- Either we have outstanding data enqueued or the pipe is closing
-      -- due to the above `output_pipe:close`, in both cases we need to
-      -- resume the dequeue loop
-      coroutine.resume(co)
-    else
-      read_cb_count = read_cb_count + 1
-      local process = function()
-        read_cb_count = read_cb_count - 1
-        process_data(data)
-      end
-      -- Schedule data processing if we're in fast event
-      -- avoids "attempt to yield across C-call boundary" by using vim.schedule
-      if vim.in_fast_event() then vim.schedule(process) else process() end
+    if #strbuf > 100000 or output_pipe:is_closing() then
+      assert(coroutine.resume(co))
     end
   end
 
@@ -352,20 +332,6 @@ M.spawn = function(opts, fn_transform, fn_done)
     error_pipe:read_start(err_cb)
   end
 
-  if opts.use_queue then
-    while not (output_pipe:is_closing() and queue:empty()) do
-      if queue:empty() then
-        coroutine.yield()
-      else
-        process_data(queue:pop())
-      end
-    end
-    -- process the leftover line from `processs_data`
-    -- will call `finish` immediately if there's no last line
-    -- otherwise, finish is called in the write callback
-    process_data(nil)
-  end
-
   return handle, pid
 end
 
@@ -390,7 +356,7 @@ M.deserialize = function(str, b64)
   res = b64 ~= false and base64.decode(res) or res
   -- safe=false enable call function
   local _, obj = serpent.load(res, { safe = false })
-  assert(type(obj) == "table")
+  assert(type(obj) == "table", vim.inspect(obj))
   return obj
 end
 
@@ -407,6 +373,7 @@ M.load_fn = function(fn_str)
   return fn_loaded
 end
 
+---no return
 local posix_exec = function(cmd)
   if type(cmd) ~= "string" or _is_win or not pcall(require, "ffi") then return end
   require("ffi").cdef([[int execl(const char *, const char *, ...);]])
@@ -425,8 +392,7 @@ M.spawn_stdio = function(opts)
 
   -- redirect 'stderr' to 'stdout' on Macs by default
   -- only takes effect if 'opts.stderr' was not set
-  if opts.stderr_to_stdout == nil and
-      uv.os_uname().sysname == "Darwin" then
+  if opts.stderr_to_stdout == nil and sysname == "Darwin" then
     opts.stderr_to_stdout = true
   end
 
@@ -439,7 +405,7 @@ M.spawn_stdio = function(opts)
   -- Requiring make_entry will create the pseudo `_G.FzfLua` global
   -- Must be called after global vars are created or devicons will
   -- err with "fzf-lua fatal: '_G._fzf_lua_server', '_G._devicons_path' both nil"
-  pcall(require, "fzf-lua.make_entry")
+  require("fzf-lua.make_entry")
 
   -- still need load_fn from str val? now deserialize do all the thing automatically
   -- or because we want to debugprint them, so we still make a string?
@@ -454,7 +420,7 @@ M.spawn_stdio = function(opts)
       io.stdout:write(("[DEBUG] raw_argv(%d) = %s" .. EOL):format(idx, arg))
     end
     -- TODO: maybe not needed anymore? since we're not using v:argv
-    if FzfLua.utils.__IS_WINDOWS then
+    if _is_win then
       arg = M.unescape_fzf(arg, FzfLua.utils.has(opts, "fzf", { 0, 52 }) and 0.52 or 0)
     end
     if opts.debug == "v" or opts.debug == 2 then
@@ -561,7 +527,7 @@ M.spawn_stdio = function(opts)
   local on_write = function(data, cb)
     if stdout then
       pipe_write(stdout, data, cb)
-    else
+    elseif data then
       -- on success: rc=true, err=nil
       -- on failure: rc=nil, err="Broken pipe"
       -- cb with an err ends the process
@@ -621,21 +587,17 @@ M.spawn_stdio = function(opts)
     end
   end
 
-  if not fn_transform and not fn_postprocess then posix_exec(content) end
+  if not fn_transform and not fn_postprocess then return posix_exec(content) end
 
   return M.spawn({
-      cwd = opts.cwd,
-      cmd = cmd,
-      cb_finish = on_finish,
-      cb_write = on_write,
-      cb_err = on_err,
-      process1 = opts.process1,
-      profiler = opts.profiler,
-      EOL = EOL,
-    },
-    fn_transform and function(x)
-      return fn_transform(x, opts)
-    end)
+    cwd = opts.cwd,
+    cmd = cmd,
+    cb_finish = on_finish,
+    cb_write = on_write,
+    cb_err = on_err,
+    EOL = EOL,
+    opts = opts,
+  })
 end
 
 

@@ -76,7 +76,7 @@ local opts2 = setmetatable({}, {
   end
 })
 
-if _G._fzf_lua_is_headless then
+if _G._fzf_lua_is_headless or vim.is_thread() then
   local _config = load_config() or {} ---@module 'fzf-lua.config'
   ---@diagnostic disable-next-line: missing-fields
   _config.globals = { git = {}, files = {}, grep = {} }
@@ -567,6 +567,7 @@ M.file = function(x, opts)
   local ret = {}
   local icon, hl
   local colon_start_idx = 1
+
   if utils.__IS_WINDOWS then
     if string.byte(x, #x) == 13 then
       -- strip ^M added by the "dir /s/b" command
@@ -676,6 +677,7 @@ M.file = function(x, opts)
   if opts._fmt and type(opts._fmt.to) == "function" then
     ret[#ret + 1], _fmt_postfix = opts._fmt.to(filepath, opts, { path = path, utils = utils })
   else
+    -- print(file_part, stripped_filepath, filepath)
     ret[#ret + 1] = file_is_ansi > 0
         -- filename is ansi escape colored, replace the inner string (#819)
         -- escape `%` in path, since `string.gsub` also use it in target (#1443)

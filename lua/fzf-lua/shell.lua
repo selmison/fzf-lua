@@ -293,10 +293,10 @@ M.stringify = function(contents, opts, fzf_field_index)
   assert(not opts.__stringified, "twice stringified")
   opts.__stringified = true
 
-  -- Convert string callbacks to callback functions
-  for _, k in ipairs({ "fn_transform", "fn_preprocess", "fn_postprocess" }) do
-    opts[k] = libuv.load_fn(opts[k]) or opts[k]
-  end
+  -- -- Convert string callbacks to callback functions
+  -- for _, k in ipairs({ "fn_transform", "fn_preprocess", "fn_postprocess" }) do
+  --   opts[k] = libuv.load_fn(opts[k]) or opts[k]
+  -- end
 
   local cmd, id = M.pipe_wrap_fn(function(pipe, ...)
     local args, n = { ... }, select("#", ...)
@@ -318,13 +318,7 @@ M.stringify = function(contents, opts, fzf_field_index)
     local write_cb_count = 0
     local pipe_want_close = false
     local EOL = utils.map_get(opts, "fzf_opts.--read0") and "\0" or "\n"
-    local fn_transform = opts.fn_transform
-    local fn_preprocess = opts.fn_preprocess
-    local fn_postprocess = opts.fn_postprocess
     local co = coroutine.running()
-
-    -- Run the preprocess function
-    if type(fn_preprocess) == "function" then fn_preprocess(opts) end
 
     -- local on_finish = function(code, sig, from, pid)
     -- print("finish", pipe, pipe_want_close, code, sig, from, pid)
@@ -335,8 +329,7 @@ M.stringify = function(contents, opts, fzf_field_index)
         -- only close if all our uv.write calls are completed
         uv.close(pipe)
         pipe = nil
-        -- Run the postprocess function
-        if type(fn_postprocess) == "function" then fn_postprocess(opts) end
+        -- if type(fn_postprocess) == "function" then fn_postprocess(opts) end
       end
     end
 
@@ -349,23 +342,6 @@ M.stringify = function(contents, opts, fzf_field_index)
         if cb then cb(nil) end
       else
         write_cb_count = write_cb_count + 1
-        if type(data) == "table" then
-          -- cb_write_lines was sent instead of cb_lines
-          if fn_transform then
-            -- safely remove items while iterating
-            local i = 1
-            while i <= #data do
-              local v = fn_transform(data[i], opts)
-              if not v then
-                table.remove(data, i)
-              else
-                data[i] = v
-                i = i + 1
-              end
-            end
-          end
-          data = #data > 0 and (table.concat(data, EOL) .. EOL) or ""
-        end
         uv.write(pipe, tostring(data), function(err)
           write_cb_count = write_cb_count - 1
           if cb then cb(err) end
@@ -388,9 +364,6 @@ M.stringify = function(contents, opts, fzf_field_index)
     end
 
     if type(contents) == "string" then
-      -- Use queue in libuv.spawn by default
-      opts.use_queue = opts.use_queue == nil and true or opts.use_queue
-
       -- Throttle pipe writes by default
       -- opts.throttle = opts.throttle == nil and true or opts.throttle
 
@@ -410,16 +383,11 @@ M.stringify = function(contents, opts, fzf_field_index)
         cmd = contents,
         env = env,
         cb_finish = on_finish,
-        cb_write_lines = on_write,
+        cb_write = on_write,
         cb_pid = function(pid) if opts.PidObject then opts.PidObject:set(pid) end end,
-        process1 = opts.process1,
-        profiler = opts.profiler,
-        use_queue = opts.use_queue,
         EOL = EOL,
-        -- Must send value, 'coroutinify' adds callback as last argument
-        -- which will conflict with the 'fn_transform' argument
-        -- send true to force line processing without transformation
-      }, true)
+        opts = opts,
+      })
     else
       -- callback with newline
       local on_write_nl = function(data, cb)
