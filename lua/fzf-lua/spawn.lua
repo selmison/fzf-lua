@@ -159,8 +159,8 @@ local on_finish = function(code)
   end
 end
 
-local on_write = stdout ~= io.stdout and function(pipe, data, cb)
-  pipe_write(pipe, data, cb)
+local on_write = stdout ~= io.stdout and function(data, cb)
+  pipe_write(stdout, data, cb)
 end or function(data, cb)
   if not data then return end
   -- on success: rc=true, err=nil
