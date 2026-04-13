@@ -212,7 +212,7 @@ end
 
 if not fn_transform and not fn_postprocess then return posix_exec(content) end
 
-local _, pid = libuv.spawn({
+local pid = libuv.spawn({
   cwd = opts.cwd,
   cmd = cmd,
   cb_finish = on_finish,

@@ -21,34 +21,6 @@ M.process_kill = function(pid, signal)
   return false
 end
 
-local function coroutine_callback(fn)
-  local co = coroutine.running()
-  local callback = function(...)
-    -- not sure what happened here...
-    -- if not M or not co then return end
-    if coroutine.status(co) == "suspended" then
-      coroutine.resume(co, ...)
-    else
-      local pid = unpack({ ... }) ---@cast pid integer
-      M.process_kill(pid)
-    end
-  end
-  fn(callback)
-  return coroutine.yield()
-end
-
-local function coroutinify(fn)
-  return function(...)
-    local args = { ... }
-    return coroutine.wrap(function()
-      return coroutine_callback(function(cb)
-        table.insert(args, cb)
-        fn(unpack(args))
-      end)
-    end)()
-  end
-end
-
 -- fix environ for uv.spawn
 ---@param cmd string
 ---@param opts uv.spawn.options
@@ -93,7 +65,6 @@ local gen_uuid = function()
 end
 
 ---@param opts fzf-lua.SpawnOpts
----@return uv.uv_process_t proc
 ---@return integer         pid
 M.spawn = function(opts)
   local EOL = opts.EOL or "\n"
@@ -174,9 +145,6 @@ M.spawn = function(opts)
     end
     handle:close()
   end)
-
-  -- save current process pid
-  if opts.cb_pid then opts.cb_pid(pid) end
 
   local function write_cb(data)
     -- write_cb_count = write_cb_count + 1
@@ -331,11 +299,8 @@ M.spawn = function(opts)
     error_pipe:read_start(err_cb)
   end
 
-  return handle, pid
+  return pid
 end
-
--- Coroutine version of spawn so we can use queue
-M.async_spawn = coroutinify(M.spawn)
 
 ---@param obj table
 ---@param b64? boolean

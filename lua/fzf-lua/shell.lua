@@ -378,16 +378,16 @@ M.stringify = function(contents, opts, fzf_field_index)
         coroutine.wrap(function() on_write("[DEBUG] [st] " .. contents .. EOL) end)()
       end
 
-      libuv.async_spawn({
+      local pid = libuv.spawn({
         cwd = opts.cwd,
         cmd = contents,
         env = env,
         cb_finish = on_finish,
         cb_write = on_write,
-        cb_pid = function(pid) if opts.PidObject then opts.PidObject:set(pid) end end,
         EOL = EOL,
         opts = opts,
       })
+      if opts.PidObject then opts.PidObject:set(pid) end
     else
       -- callback with newline
       local on_write_nl = function(data, cb)
