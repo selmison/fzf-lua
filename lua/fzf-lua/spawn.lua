@@ -212,7 +212,7 @@ end
 
 if not fn_transform and not fn_postprocess then return posix_exec(content) end
 
-local pid = libuv.spawn({
+local pid, done = libuv.spawn({
   cwd = opts.cwd,
   cmd = cmd,
   cb_finish = on_finish,
@@ -224,8 +224,9 @@ local pid = libuv.spawn({
 
 -- while vim.uv.run() do end -- os.exit in spawn_stdio
 if pid then
-  while uv.os_getpriority(pid) do
-    vim.wait(100, function() return uv.os_getpriority(pid) == nil end)
+  while uv.os_getpriority(pid) or not done() do
+    -- io.stdout:write(tostring(done()) .. '\n')
+    vim.wait(100, function() return uv.os_getpriority(pid) == nil and done() end)
   end
 else
   -- No child process was spawned (content was table/function, not a string command).

@@ -88,6 +88,7 @@ M.spawn = function(opts)
     require("fzf-lua.lib.stringbuffer")).new()
   local work_ctx
 
+  -- TODO: non-EOF case?
   local can_finish = function()
     return not output_pipe:is_active() -- EOF signalled or process is aborting
         and write_cb_count == 0        -- no outstanding write callbacks
@@ -300,7 +301,8 @@ M.spawn = function(opts)
     error_pipe:read_start(err_cb)
   end
 
-  return pid
+  -- TODO: spawn_stdio need to wait for end
+  return pid, can_finish
 end
 
 ---@param obj table
