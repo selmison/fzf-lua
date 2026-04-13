@@ -229,6 +229,10 @@ M.spawn = function(opts)
   end
 
   work_ctx = uv.new_work(split_lines, write_cb)
+  local write = function(data)
+    write_cb_count = write_cb_count + 1
+    work_ctx:queue(data, optstr, uuid)
+  end
 
   local co = coroutine.create(function()
     local stop = 0
@@ -238,8 +242,7 @@ M.spawn = function(opts)
       if output_pipe:is_closing() then
         if len == 0 then return end
         if ref[len - 1] ~= EOL_byte then strbuf:put(EOL_byte) end -- make split_lines happy
-        write_cb_count = write_cb_count + 1
-        return work_ctx:queue(strbuf:get(), optstr, uuid)
+        return write(strbuf:get())
       end
       local eol = len
       for i = len - 1, stop, -1 do
@@ -252,10 +255,8 @@ M.spawn = function(opts)
         stop = len -- no EOL found, wait for more data
         coroutine.yield()
       else
-        local data = strbuf:get(eol + 1)
+        write(strbuf:get(eol + 1))
         stop = #strbuf
-        write_cb_count = write_cb_count + 1
-        work_ctx:queue(data, optstr, uuid)
       end
     end
     if can_finish() then finish(0, 0, "[EOF]", pid) end
