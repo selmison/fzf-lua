@@ -162,6 +162,7 @@ end
 local on_write = stdout ~= io.stdout and function(data, cb)
   pipe_write(stdout, data, cb)
 end or function(data, cb)
+  -- io.stdout:write("notify-send " .. tostring(data) .. EOL)
   if not data then return end
   -- on success: rc=true, err=nil
   -- on failure: rc=nil, err="Broken pipe"
@@ -181,7 +182,8 @@ end or function(data)
   redir:write(data)
 end
 
-if fn_preprocess then fn_preprocess(opts) end
+-- seems no longer needed if we already run in thread
+-- if fn_preprocess then fn_preprocess(opts) end
 
 local cmd ---@type string
 if type(content) == "string" then

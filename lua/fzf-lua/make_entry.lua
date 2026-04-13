@@ -519,7 +519,8 @@ M.preprocess = function(opts)
   end
 
   -- formatter `to` function
-  if opts.formatter and not opts._fmt then
+  -- TODO: pass config to thread
+  if not vim.is_thread() and opts.formatter and not opts._fmt then
     opts._fmt = opts._fmt or {}
     opts._fmt.to = opts2._fmt.to
     -- Attempt to load from string value `_to`

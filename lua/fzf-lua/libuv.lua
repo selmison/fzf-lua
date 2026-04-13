@@ -202,6 +202,8 @@ M.spawn = function(opts)
       local load_fn = FzfLua.libuv.load_fn
       if not _G.uuid then
         local fn_preprocess = load_fn(opts.fn_preprocess) or opts.fn_preprocess
+        -- io.stdout:write("aaaaaaaaaaaaa\n")
+        io.stdout:write(tostring(opts.fn_preprocess) .. "\n")
         if fn_preprocess then fn_preprocess(opts) end
       end
       if opts.fn_transform then _G.trans = load_fn(opts.fn_transform) end

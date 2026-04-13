@@ -512,6 +512,10 @@ M.wrap_spawn_stdio = function(opts)
       M.check_upvalue(v, "opts." .. k)
     end
   end
+  -- io.stdout:write("aaaaaaaaaaaaa\n")
+  -- io.stdout:write(tostring(opts.fn_preprocess) .. "\n")
+  -- print(opts.fn_preprocess)
+  -- print("eeeeeeeeeee")
   local cmd_str = ("%s%s -u NONE -l %s %s"):format(
     nvim_runtime,
     libuv.shellescape(is_win and vim.fs.normalize(nvim_bin) or nvim_bin),
